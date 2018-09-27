@@ -19,8 +19,7 @@
 #ifndef METRON_TYPES_H
 #define METRON_TYPES_H
 
-#include <rte_log.h>
-#include <rte_memory.h>
+#include <rte_common.h>
 
 /*
  * Allow strings to be used for preprocessor #define's
@@ -47,60 +46,29 @@ typedef int bool;
 /*
  * Logging definitions
  */
-#define LOG_ERROR(log_type, fmt, args...) RTE_LOG(ERR, log_type, fmt, ##args);
-#define LOG_WARN(log_type, fmt, args...) RTE_LOG(WARNING, log_type, fmt, ##args);
-#define LOG_INFO(log_type, fmt, args...) RTE_LOG(INFO, log_type, fmt, ##args);
+#define RTE_LOGTYPE_FASTCAPA RTE_LOGTYPE_USER1
+
+#define LOG_ERR(fmt, args...) RTE_LOG(ERR, FASTCAPA, fmt, ##args)
+#define LOG_WARN(fmt, args...) RTE_LOG(WARNING, FASTCAPA, fmt, ##args)
+#define LOG_INFO(fmt, args...) RTE_LOG(INFO, FASTCAPA, fmt, ##args)
 
 #ifdef DEBUG
 #define LOG_LEVEL RTE_LOG_DEBUG
-#define LOG_DEBUG(log_type, fmt, args...) RTE_LOG(DEBUG, log_type, fmt, ##args);
+#define LOG_DEBUG(fmt, args...) RTE_LOG(DEBUG, FASTCAPA, fmt, ##args)
 #else
 #define LOG_LEVEL RTE_LOG_INFO
-#define LOG_DEBUG(log_type, fmt, args...) do {} while (0)
+#define LOG_DEBUG(fmt, args...) do {} while (0)
 #endif
 
 /*
- * Application configuration parameters.
+ * Pcap packet header
  */
 typedef struct {
-
-    /* The number of receive descriptors to allocate for the receive ring. */
-    uint16_t nb_rx_desc;
-
-    /* The number of receive queues to set up for each ethernet device. */
-    uint16_t nb_rx_queue;
-
-    /* The size of the transmit ring (must be a power of 2). */
-    unsigned int tx_ring_size;
-
-    /* The maximum number of packets retrieved by the receive worker. */
-    uint16_t rx_burst_size;
-
-    /* The maximum number of packets retrieved by the transmit worker. */
-    unsigned int tx_burst_size;
-
-    /* Defines which ports packets will be consumed from. */
-    unsigned int enabled_port_mask;
-
-    /* The name of the Kafka topic that packet data is sent to. */
-    const char* kafka_topic;
-
-    /* A file containing configuration values for the Kafka client. */
-    char* kafka_config_path;
-
-    /* A file to which the Kafka stats are appended to. */
-    char* kafka_stats_path;
-
-    /* The number of receive workers. */
-    unsigned int nb_rx_workers;
-
-    /* The number of transmit workers. */
-    unsigned int nb_tx_workers;
-
-    /* The number of NIC ports from which packets will be consumed. */
-    unsigned int nb_ports;
-
-} app_params __rte_cache_aligned;
+    uint32_t timestamp;
+    uint32_t microseconds;
+    uint32_t packet_length;
+    uint32_t packet_length_wire;
+} __rte_packed pcap_packet_header;
 
 /*
  * Tracks packet processing metrics.
@@ -110,7 +78,24 @@ typedef struct {
     uint64_t out;
     uint64_t depth;
     uint64_t drops;
-} app_stats __rte_cache_aligned;
+    uint64_t pause_frames;
+} __rte_cache_aligned app_stats;
+
+/*
+ * Pcap buffer to store a collection of packets.
+ */
+typedef struct {
+
+    /* current offset from buffer start */
+    uint32_t offset;
+
+    /* packets in the buffer */
+    uint32_t packets;
+
+    /* pointer to the actual buffer */
+    unsigned char * buffer;
+
+} __rte_cache_aligned pcap_buffer;
 
 /*
  * The parameters required by a receive worker.
@@ -120,22 +105,40 @@ typedef struct {
     /* worker identifier */
     uint16_t worker_id;
 
-    /* queue identifier from which packets are fetched */
-    uint16_t queue_id;
+    /* pointer to the quit flag set by the signal handler */
+    volatile bool * quit_signal;
+
+    /* Defines which port packets will be consumed from. */
+    uint16_t port;
+
+    /* queue identifier from which packets are fetched and pause frames sent */
+    uint16_t queue;
 
     /* how many packets are pulled off the queue at a time */
     uint16_t rx_burst_size;
 
-    /* Defines which ports packets will be consumed from. */
-    unsigned int enabled_port_mask;
+    /* how many pause frames are sent at a time */
+    uint16_t pause_burst_size;
 
-    /* the ring onto which the packets are enqueued */
-    struct rte_ring *output_ring;
+    /* Use flow control */
+    uint16_t flow_control;
+
+    /* the ring onto which full packet buffers are enqueued */
+    struct rte_ring * pbuf_full_ring;
+
+    /* the ring from which empty packet buffers are dequeued */
+    struct rte_ring * pbuf_free_ring;
+
+    /* packet buffer watermark */
+    uint32_t watermark;
+
+    /* the memory pool used to send out pause frames */
+    struct rte_mempool * pause_mbuf_pool;
 
     /* metrics */
-    app_stats stats;
+    app_stats * stats;
 
-} rx_worker_params __rte_cache_aligned;
+} __rte_cache_aligned rx_worker_params;
 
 /*
  * The parameters required by a transmit worker.
@@ -145,22 +148,127 @@ typedef struct {
     /* worker identifier */
     uint16_t worker_id;
 
-    /* how many packets are pulled off the ring at a time */
-    unsigned int tx_burst_size;
+    /* pointer to the quit flag set by the signal handler */
+    volatile bool * quit_signal;
 
-    /* The size of the transmit ring (must be a power of 2). */
-    unsigned int tx_ring_size;
+    /* Defines which port packets will be consumed from. */
+    uint16_t port;
 
-    /* the ring from which packets are dequeued */
-    struct rte_ring *input_ring;
+    /* queue identifier from which pause frames are sent */
+    uint16_t queue;
 
     /* identifies the kafka client connection used by the worker */
-    int kafka_id;
+    uint16_t kafka_id;
+
+    /* how many packets buffers are pulled off the queue at a time */
+    uint16_t tx_burst_size;
+
+    /* how many pause frames are sent at a time */
+    uint16_t pause_burst_size;
+
+    /* Use flow control */
+    uint16_t flow_control;
+
+    /* the ring onto which full packet buffers are enqueued */
+    struct rte_ring * pbuf_full_ring;
+
+    /* the ring from which empty packet buffers are dequeued */
+    struct rte_ring * pbuf_free_ring;
+
+    /* the memory pool used to send out pause frames */
+    struct rte_mempool * pause_mbuf_pool;
 
     /* worker metrics */
-    app_stats stats;
+    app_stats * stats;
 
-} tx_worker_params __rte_cache_aligned;
+} __rte_cache_aligned tx_worker_params;
 
+/*
+ * Application configuration parameters.
+ */
+typedef struct {
+
+    /* The number of receive descriptors to allocate for the receive ring. */
+    uint16_t nb_rx_desc;
+
+    /* The number of NIC ports from which packets will be consumed. */
+    uint16_t nb_ports;
+
+    /* The list of selected ports */
+    uint16_t * port_list;
+
+    /* The number of rx and tx queues to set up for each ethernet device. */
+    uint16_t nb_queues_per_port;
+
+    /* The total number of connections */
+    uint32_t nb_queues;
+
+    /* The number of packet buffers per queue (must be a power of 2). */
+    uint32_t nb_mbufs;
+
+    /* The number of packet collection buffers per queue (must be a power of 2). */
+    uint16_t nb_pbufs;
+
+    /* The size of each packet buffer */
+    uint16_t mbuf_len;
+
+    /* The size of each packet collection buffer */
+    uint32_t pbuf_len;
+
+    /* The maximum number of packets retrieved by the receive worker. */
+    uint16_t rx_burst_size;
+
+    /* how many pause frames are sent at a time */
+    uint16_t pause_burst_size;
+
+    /* packet buffer watermark */
+    uint32_t watermark;
+
+    /* Defines which ports packets will be consumed from. */
+    uint64_t portmask;
+
+    /* The name of the Kafka topic that packet data is sent to. */
+    const char * kafka_topic;
+
+    /* A file containing configuration values for the Kafka client. */
+    char * kafka_config_path;
+
+    /* A file to which the Kafka stats are appended to. */
+    char * kafka_stats_path;
+
+    /* Use flow control */
+    uint16_t flow_control;
+
+    /* Print statistics periodically */
+    uint16_t stats_period;
+
+    /* List of rings onto which full packet buffers are enqueued */
+    struct rte_ring ** pbuf_full_rings;
+
+    /* List of rings which empty packet buffers are dequeued */
+    struct rte_ring ** pbuf_free_rings;
+
+    /* List of pcap buffers for collecting packets */
+    pcap_buffer ** buffers;
+
+    /* List of rx memory buffer pools */
+    struct rte_mempool ** rx_pools;
+
+    /* List of pause frame memory buffer pools */
+    struct rte_mempool ** tx_pools;
+
+    /* List of rx worker configurations */
+    rx_worker_params * rxw_params;
+
+    /* List of tx worker configurations */
+    tx_worker_params * txw_params;
+
+    /* List of rx worker stats */
+    app_stats * rxw_stats;
+
+    /* List of tx worker stats */
+    app_stats * txw_stats;
+
+} __rte_cache_aligned app_params;
 
 #endif

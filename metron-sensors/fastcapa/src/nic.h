@@ -19,32 +19,23 @@
 #ifndef METRON_NIC_H
 #define METRON_NIC_H
 
-#include <signal.h>
 #include <unistd.h>
+
+#include <rte_common.h>
 #include <rte_ethdev.h>
-#include <rte_mempool.h>
-#include <rte_mbuf.h>
-#include <rte_errno.h>
+
 #include "types.h"
 
-#define MBUF_CACHE_SIZE 250
-#define TX_QUEUE_SIZE 64
-#define NUM_MBUFS ((64 * 1024) - 1)
+#define TX_DESC_DEFAULT 1024
 
 /*
- * Preparation for receiving and processing packets.
+ * Initialize a NIC port.
  */
-int init_receive(
-    const uint8_t enabled_port_mask,
-    const uint16_t nb_rx_queue,
-    const uint16_t nb_rx_desc);
-
-/*
- * Preparation for transmitting packets.
- */
-int init_transmit(
-    struct rte_ring **tx_rings,
-    const unsigned int count,
-    const unsigned int size);
+int port_init(
+    const uint16_t port,
+    struct rte_mempool ** mbuf_pools,
+    const uint16_t rx_queues,
+    const uint16_t nb_rx_desc,
+    unsigned int flow_control);
 
 #endif

@@ -33,8 +33,10 @@ static rd_kafka_topic_t **kaf_top_h;
 static unsigned num_conns;
 static FILE *stats_fd;
 static app_stats *kaf_conn_stats;
+static struct rte_ring ** pbuf_free_rings;
 static struct opaque *kaf_opaque;
 static uint64_t *kaf_keys;
+static int msgflags;
 
 /*
  * A callback executed when an error occurs within the kafka client
@@ -46,7 +48,7 @@ static void kaf_error_cb (
     void* UNUSED(opaque))
 {
 
-    LOG_ERROR(USER1, "kafka client error; conn=%s, error=%s [%s] \n",
+    LOG_ERR("kafka client error; conn=%s, error=%s [%s] \n",
         rd_kafka_name(rk), rd_kafka_err2str(err), reason);
 }
 
@@ -60,7 +62,7 @@ static void kaf_throttle_cb (
     int throttle_time_ms,
     void* UNUSED(opaque))
 {
-    LOG_ERROR(USER1, "kafka client throttle event; conn=%s, time=%dms broker=%s broker_id=%"PRId32" \n",
+    LOG_ERR("kafka client throttle event; conn=%s, time=%dms broker=%s broker_id=%"PRId32" \n",
         rd_kafka_name(rk), throttle_time_ms, broker_name, broker_id);
 }
 
@@ -85,7 +87,7 @@ static int kaf_stats_cb(
     if(NULL != stats_fd) {
         rc = fprintf(stats_fd, "{ \"conn_id\": \"%u\", \"conn_name\": \"%s\", \"stats\": %s }\n", conn_id, rd_kafka_name(rk), json);
         if(rc < 0) {
-            LOG_ERROR(USER1, "Unable to append to stats file \n");
+            LOG_ERR("Unable to append to stats file \n");
             return rc;
         }
         fflush(stats_fd);
@@ -117,10 +119,11 @@ static void kaf_message_delivered_cb (
         kaf_conn_stats[conn_id].drops += 1;
 
         #ifdef DEBUG
-        LOG_ERROR(USER1, "delivery failed: conn=%s, error=%s \n",
+        LOG_ERR("delivery failed: conn=%s, error=%s \n",
           rd_kafka_name(rk), rd_kafka_err2str(rkmessage->err));
         #endif
     }
+    while(!rte_ring_sp_enqueue_bulk(pbuf_free_rings[conn_id], &rkmessage->_private, 1, NULL));
 }
 
 /*
@@ -132,14 +135,14 @@ static int open_stats_file(const char *filename)
 
     stats_fd = fopen(filename, "a");
     if(NULL == stats_fd) {
-        LOG_ERROR(USER1, "Unable to open stats file: file=%s, error=%s \n", filename, strerror(errno));
+        LOG_ERR("Unable to open stats file: file=%s, error=%s \n", filename, strerror(errno));
         return -1;
     }
 
     // mark the file
     rc = fprintf(stats_fd, "{} \n");
     if(rc < 0) {
-       LOG_ERROR(USER1, "Unable to append to stats file \n");
+       LOG_ERR("Unable to append to stats file \n");
        return rc;
     }
 
@@ -168,7 +171,7 @@ static void kaf_global_option(const char* key, const char* val, void* arg)
 
     rc = rd_kafka_conf_set(conf, key, val, err, sizeof(err));
     if (RD_KAFKA_CONF_OK != rc) {
-        LOG_WARN(USER1, "unable to set kafka global option: '%s' = '%s': %s\n", key, val, err);
+        LOG_WARN("unable to set kafka global option: '%s' = '%s': %s\n", key, val, err);
     }
 }
 
@@ -183,7 +186,7 @@ static void kaf_topic_option(const char* key, const char* val, void* arg)
 
     rc = rd_kafka_topic_conf_set(conf, key, val, err, sizeof(err));
     if (RD_KAFKA_CONF_OK != rc) {
-        LOG_WARN(USER1, "unable to set kafka topic option: '%s' = '%s': %s\n", key, val, err);
+        LOG_WARN("unable to set kafka topic option: '%s' = '%s': %s\n", key, val, err);
     }
 }
 
@@ -204,7 +207,7 @@ static void parse_kafka_config(const char* file_path, const char* group,
     // load the configuration file
     GKeyFile* gkf = g_key_file_new();
     if (!g_key_file_load_from_file(gkf, file_path, G_KEY_FILE_NONE, &err)) {
-        LOG_ERROR(USER1, "bad config: %s: %s\n", file_path, err->message);
+        LOG_ERR("bad config: %s: %s\n", file_path, err->message);
     }
 
     // only grab keys within the specified group
@@ -215,16 +218,16 @@ static void parse_kafka_config(const char* file_path, const char* group,
         for (i = 0; i < num_keys; i++) {
             value = g_key_file_get_value(gkf, group, keys[i], errs);
             if (value) {
-                LOG_INFO(USER1, "config[%s]: %s = %s\n", group, keys[i], value);
+                LOG_INFO("config[%s]: %s = %s\n", group, keys[i], value);
                 option_cb(keys[i], value, arg);
             }
             else {
-                LOG_WARN(USER1, "bad config: %s: %s = %s: %s\n", file_path, keys[i], value, errs[0]->message);
+                LOG_WARN("bad config: %s: %s = %s: %s\n", file_path, keys[i], value, errs[0]->message);
             }
         }
     }
     else {
-        LOG_WARN(USER1, "bad config: %s: %s\n", file_path, errs[0]->message);
+        LOG_WARN("bad config: %s: %s\n", file_path, errs[0]->message);
     }
 
     g_strfreev(keys);
@@ -234,19 +237,24 @@ static void parse_kafka_config(const char* file_path, const char* group,
 /**
  * Initializes a pool of Kafka connections.
  */
-void kaf_init(int num_of_conns, const char* kafka_topic, const char* kafka_config_path, const char* kafka_stats_path)
+void kaf_init(app_params* params)
 {
+    int num_of_conns = params->nb_queues;
+    const char* kafka_topic = params->kafka_topic;
+    const char* kafka_config_path = params->kafka_config_path;
+    const char* kafka_stats_path = params->kafka_stats_path;
     int i;
     char errstr[512];
 
     // open the file to which the kafka stats are appended
     if(NULL != kafka_stats_path) {
-        LOG_INFO(USER1, "Appending Kafka client stats to '%s' \n", kafka_stats_path);
+        LOG_INFO("Appending Kafka client stats to '%s' \n", kafka_stats_path);
         open_stats_file(kafka_stats_path);
     }
 
     // the number of connections to maintain
     num_conns = num_of_conns;
+    msgflags = 0;
 
     // create kafka resources for each consumer
     kaf_h = calloc(num_of_conns, sizeof(rd_kafka_t*));
@@ -254,6 +262,7 @@ void kaf_init(int num_of_conns, const char* kafka_topic, const char* kafka_confi
     kaf_conn_stats = calloc(num_of_conns, sizeof(app_stats));
     kaf_opaque = calloc(num_of_conns, sizeof(struct opaque));
     kaf_keys = calloc(num_of_conns, sizeof(uint64_t));
+    pbuf_free_rings = params->pbuf_free_rings;
 
     for (i = 0; i < num_of_conns; i++) {
 
@@ -335,25 +344,27 @@ void kaf_close(void)
 {
     unsigned i;
 
-    LOG_INFO(USER1, "Closing all Kafka connections \n");
+    LOG_INFO("Closing all Kafka connections \n");
     for (i = 0; i < num_conns; i++) {
-       LOG_INFO(USER1, "'%u' message(s) queued on %s \n", rd_kafka_outq_len(kaf_h[i]), rd_kafka_name(kaf_h[i]));
+       LOG_INFO("'%u' message(s) queued on %s \n", rd_kafka_outq_len(kaf_h[i]), rd_kafka_name(kaf_h[i]));
     }
 
     for (i = 0; i < num_conns; i++) {
 
         // wait for messages to be delivered
         while (rd_kafka_outq_len(kaf_h[i]) > 0) {
-            LOG_INFO(USER1, "Waiting for '%u' message(s) on %s \n", rd_kafka_outq_len(kaf_h[i]), rd_kafka_name(kaf_h[i]));
+            LOG_INFO("Waiting for '%u' message(s) on %s \n", rd_kafka_outq_len(kaf_h[i]), rd_kafka_name(kaf_h[i]));
             rd_kafka_poll(kaf_h[i], POLL_TIMEOUT_MS);
         }
 
-        LOG_INFO(USER1, "All messages cleared on %s \n", rd_kafka_name(kaf_h[i]));
+        LOG_INFO("All messages cleared on %s \n", rd_kafka_name(kaf_h[i]));
         rd_kafka_flush(kaf_h[i], POLL_TIMEOUT_MS);
         rd_kafka_topic_destroy(kaf_top_h[i]);
         rd_kafka_destroy(kaf_h[i]);
     }
 
+    free(kaf_h);
+    free(kaf_top_h);
     free(kaf_conn_stats);
     free(kaf_opaque);
     free(kaf_keys);
@@ -361,51 +372,23 @@ void kaf_close(void)
 }
 
 /**
- * The current time in microseconds.
- */
-static uint64_t current_time(void)
-{
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return tv.tv_sec * (uint64_t)1000000 + tv.tv_usec;
-}
-
-/**
  * Publish a set of packets to a kafka topic.
  */
-int kaf_send(struct rte_mbuf* pkts[], int pkt_count, int conn_id)
+int kaf_send(pcap_buffer* buffer, const uint16_t conn_id)
 {
     // unassigned partition
     int partition = RD_KAFKA_PARTITION_UA;
-    int i;
-    int pkts_sent = 0;
-    rd_kafka_message_t kaf_msgs[pkt_count];
+    rd_kafka_resp_err_t ret;
 
     // find the topic connection based on the conn_id
     rd_kafka_topic_t* kaf_topic = kaf_top_h[conn_id];
 
-    // current time in epoch microseconds from (big-endian aka network byte order)
-    // is added as a message key before being sent to kafka
-    kaf_keys[conn_id] = htobe64(current_time());
+    // hand the message off to kafka
+    ret = rd_kafka_produce(kaf_topic, partition, msgflags, (void *) buffer->buffer, (size_t) buffer->offset, NULL, 0, buffer);
+    if (ret)
+        return 1;
 
-    // create the batch message for kafka
-    for (i = 0; i < pkt_count; i++) {
-        kaf_msgs[i].err = 0;
-        kaf_msgs[i].rkt = kaf_topic;
-        kaf_msgs[i].partition = partition;
-        kaf_msgs[i].payload = rte_ctrlmbuf_data(pkts[i]);
-        kaf_msgs[i].len = rte_ctrlmbuf_len(pkts[i]);
-        kaf_msgs[i].key = (void*) &kaf_keys[conn_id];
-        kaf_msgs[i].key_len = sizeof(uint64_t);
-        kaf_msgs[i].offset = 0;
-    }
+    kaf_conn_stats[conn_id].in++;
 
-    // hand all of the messages off to kafka
-    pkts_sent = rd_kafka_produce_batch(kaf_topic, partition, 0, kaf_msgs, pkt_count);
-
-    // update stats
-    kaf_conn_stats[conn_id].in += pkt_count;
-    kaf_conn_stats[conn_id].drops += (pkt_count - pkts_sent);
-
-    return pkts_sent;
+    return 0;
 }

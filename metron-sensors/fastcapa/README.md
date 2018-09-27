@@ -18,9 +18,10 @@ limitations under the License.
 Fastcapa
 ========
 
-Fastcapa is a probe that performs fast network packet capture by leveraging Linux kernel-bypass and user space networking technology.  The probe will bind to a network interface, capture network packets, and send the raw packet data to Kafka.  This provides a scalable mechanism for ingesting high-volumes of network packet data into a Hadoop-y cluster.
+Fastcapa is an application that performs fast network packet capture by leveraging Linux kernel-bypass and user space networking technology.  Fastcapa will bind to a network interface, capture network packets, and send the raw packet data to Kafka.  This provides a scalable mechanism for ingesting high-volumes of network packet data into a Hadoop-y cluster.
 
-Fastcapa leverages the Data Plane Development Kit ([DPDK](http://dpdk.org/)).  DPDK is a set of libraries and drivers to perform fast packet processing in Linux user space.  
+Fastcapa leverages the Data Plane Development Kit ([DPDK](http://dpdk.org/)).  DPDK is a set of libraries and drivers to perform fast packet processing in Linux user space.  It has been tested with [Librdkafka 1.1.0](https://github.com/edenhill/librdkafka/releases/tag/v1.1.0) and [DPDK 19.08](https://git.dpdk.org/dpdk/tag/?h=v19.08).
+
 
 * [Quick Start](#quick-start)
 * [Requirements](#requirements)
@@ -47,7 +48,7 @@ This environment sets up two nodes.  One node produces network packets over a ne
 Requirements
 ------------
 
-The following system requirements must be met to run the Fastcapa probe.
+The following system requirements must be met to run Fastcapa.
 
 * Linux kernel >= 2.6.34
 * A [DPDK supported ethernet device; NIC](http://dpdk.org/doc/nics).
@@ -73,7 +74,7 @@ The following manual installation steps assume that they are executed on CentOS 
 
 #### Enable Transparent Huge Pages
 
-The probe performs its own memory management by leveraging transparent huge pages.  In Linux, Transparent Huge Pages (THP) can be enabled either dynamically or on boot.  It is recommended that these be allocated on boot to increase the chance that a larger, physically contiguous chunk of memory can be allocated.
+Fastcapa performs its own memory management by leveraging transparent huge pages.  In Linux, Transparent Huge Pages (THP) can be enabled either dynamically or on boot.  It is recommended that these be allocated on boot to increase the chance that a larger, physically contiguous chunk of memory can be allocated.
 
 The size of THPs that are supported will vary based on your CPU.  These typically include 2 MB and 1 GB THPs.  For better performance, allocate 1 GB THPs if supported by your CPU.
 
@@ -110,7 +111,7 @@ The size of THPs that are supported will vary based on your CPU.  These typicall
     8
     ```
 
-5. Once the THPs have been reserved, they need to be mounted to make them available to the probe.
+5. Once the THPs have been reserved, they need to be mounted to make them available to Fastcapa.
     ```
     cp /etc/fstab /etc/fstab.orig
     mkdir -p /mnt/huge_1GB
@@ -166,8 +167,6 @@ The size of THPs that are supported will vary based on your CPU.  These typicall
 
 #### Install Librdkafka
 
-The probe has been tested with [Librdkafka 0.9.4](https://github.com/edenhill/librdkafka/releases/tag/v0.9.4).
-
 1. Choose an installation path.  In this example, the libs will actually be installed at `/usr/local/lib`; note that `lib` is appended to the prefix.
     ```
     export RDK_PREFIX=/usr/local
@@ -175,8 +174,8 @@ The probe has been tested with [Librdkafka 0.9.4](https://github.com/edenhill/li
 
 2. Download, build and install.
     ```
-    wget https://github.com/edenhill/librdkafka/archive/v0.9.4.tar.gz  -O - | tar -xz
-    cd librdkafka-0.9.4/
+    wget https://github.com/edenhill/librdkafka/archive/v1.1.0.tar.gz  -O - | tar -xz
+    cd librdkafka-1.1.0/
     ./configure --prefix=$RDK_PREFIX
     make
     make install
@@ -226,11 +225,11 @@ Follow these steps to run Fastcapa.
     fastcapa -c 0x03 --huge-dir /mnt/huge_1GB -- -p 0x01 -t pcap -c /etc/fastcapa.conf
     ```
 
-4. Terminate Fastcapa with `SIGINT` or by entering `CTRL-C`.  The probe will cleanly shut down all of the workers and allow the backlog of packets to drain.  To terminate the process without clearing the queue, send a `SIGKILL` or be entering `killall -9 fastcapa`.
+4. Terminate Fastcapa with `SIGINT` or by entering `CTRL-C`.  Fastcapa will cleanly shut down all of the workers and allow the backlog of packets to drain.  To terminate the process without clearing the queue, send a `SIGKILL` or be entering `killall -9 fastcapa`.
 
 ### Parameters
 
-Fastcapa accepts three sets of parameters.  
+Fastcapa accepts three sets of parameters.
 
 1. Command-line parameters passed directly to DPDK's Environmental Abstraction Layer (EAL)
 2. Command-line parameters that define how Fastcapa will interact with DPDK.  These parametera are separated on the command line by a  double-dash (`--`).
@@ -251,7 +250,7 @@ The most commonly used EAL parameter involves specifying which logical CPU cores
                       Within the group, '-' is used for range separator,
                       ',' is used for single number separator.
                       '( )' can be omitted for single element group,
-                      '@' can be omitted if cpus and lcores have the same value                     
+                      '@' can be omitted if cpus and lcores have the same value
 ```
 
 To get more information about other EAL parameters, run the following.
@@ -264,30 +263,42 @@ fastcapa -h
 | Name | Command | Description | Default |
 |--------------------------|-----------------|---------------------------------------------------------------------------------------------------------------------------|---------|
 | Port Mask | -p PORT_MASK | A bit mask identifying which ports to bind. | 0x01 |
-| Receive Burst Size | -b RX_BURST_SIZE | The max number of packets processed by a receive worker. | 32 |
-| Transmit Burst Size | -w TX_BURST_SIZE | The max number of packets processed by a transmit worker.  | 256 |
-| Receive Descriptors | -d NB_RX_DESC | The number of descriptors for each receive queue (the size of the receive queue.)  Limited by the ethernet device in use. | 1024 |
-| Transmission Ring Size | -x TX_RING_SIZE | The size of each transmission ring.  This must be a power of 2. | 2048 |
-| Number Receive Queues | -q NB_RX_QUEUE | Number of receive queues to use for each port.  Limited by the ethernet device in use. | 2 |
+| Receive Burst Size | -b RX_BURST_SIZE | The max number of packets fetched by a receive worker at a time. | 128 |
+| Pause Burst Size | -a PAUSE_BURST_SIZE | The max number of software pause frames sent at a time by the workers.  | 128 |
+| Receive Descriptors | -d NB_RX_DESC | The number of descriptors for each receive queue (the size of the receive queue). Limited by the ethernet device in use. | 1024 |
+| Num of MBUFs | -m NB_MBUFS | The number of packet receive buffers per queue | 65536 |
+| Num of PBUFs | -n NB_PBUFS | The number of packet collection buffers per queue (used by receive workers to pack packets into a single kafka message) | 256 |
+| Length of MBUFs | -i MBUF_LEN | The length of each packet receive buffer (in bytes). | 2176 |
+| Length of PBUFs | -j PBUF_LEN | The length of each packet collection buffer (in bytes). | 2097152 |
+| Num of Queues per port | -q QUEUES_PER_PORT | The number of receive and transmit queues to use for each port. Limited by the ethernet device in use. | 1 |
 | Kafka Topic | -t KAFKA_TOPIC | The name of the Kafka topic. | pcap |
 | Configuration File | -c KAFKA_CONF | Path to a file containing configuration values. |  |
-| Stats | -s KAFKA_STATS | Appends performance metrics in the form of JSON strings to the specified file. |  |
+| Stats period | -s STATS_PERIOD | Periodically print performance metrics to STDOUT (every X seconds, 0 to disable). | 0 |
+| Stats file | -f KAFKA_STATS | Appends performance metrics in the form of JSON strings to the specified file. |  |
+| Flow control | -z | Enable 802.3x flow control back to the capture source. |  |
 
 To get more information about the Fastcapa specific parameters, run the following.  Note that this puts the `-h` after the double-dash `--`.
 ```
 fastcapa -- -h
 
 fastcapa [EAL options] -- [APP options]
-  -p PORT_MASK        bitmask of ports to bind                     [0x01]
-  -b RX_BURST_SIZE    burst size of receive worker                 [32]
-  -w TX_BURST_SIZE    burst size of transmit worker                [256]
-  -d NB_RX_DESC       num of descriptors for receive ring          [1024]
-  -x TX_RING_SIZE     size of tx rings (must be a power of 2)      [2048]
-  -q NB_RX_QUEUE      num of receive queues for each device        [1]
-  -t KAFKA_TOPIC      name of the kafka topic                      [pcap]
-  -c KAFKA_CONF       file containing configs for kafka client
-  -s KAFKA_STATS      append kafka client stats to a file
-  -h                  print this help message
+ -p PORT_MASK        Bitmask of ports to bind                     [0x01]
+ -b RX_BURST_SIZE    Burst size of receive worker                 [128]
+ -a PAUSE_BURST_SIZE Burst size of soft pause frames              [128]
+ -d NB_RX_DESC       Num of descriptors for receive ring          [1024]
+ -m NB_MBUFS         Num of pkt receive bufs per queue (2^N)      [65536]
+ -i MBUF_LEN         Size (in bytes) of each MBUF                 [2176]
+                     Default value is 2KB + RTE_PKTMBUF_HEADROOM
+ -n NB_PBUFS         Num of pkt collection bufs per queue (2^N)   [512]
+                     (used to batch packets before transmitting)
+ -j PBUF_LEN         Size (in bytes) of each PBUF (2^N)           [4194304]
+ -q QUEUES_PER_PORT  Num of RX/TX queues (cores) per port         [1]
+ -s STATS_PERIOD     Interval for printing stats (0:Disabled)     [0]
+ -t KAFKA_TOPIC      Name of the kafka topic                      [pcap]
+ -c KAFKA_CONF       File containing configs for kafka client
+ -f KAFKA_STATS      Append kafka client stats to a file
+ -z                  Use pause frames for flow control
+ -h                  Print this help message
 ```
 
 #### Fastcapa-Kafka Configuration File
@@ -315,7 +326,8 @@ Global configuration values that should be located under the `[kafka-global]` he
 | message.copy.max.bytes | Maximum size for message to be copied to buffer. Messages larger than this will be passed by reference (zero-copy) at the expense of larger iovecs. | 65535 |
 | batch.num.messages | Maximum number of messages batched in one MessageSet | 10000 |
 | statistics.interval.ms | How often statistics are emitted; 0 = never | 0 |
-| compression.codec | Compression codec to use for compressing message sets; {none, gzip, snappy, lz4 } | none |
+| compression.codec | Compression codec to use for compressing message sets; {none, gzip, snappy, lz4 } | lz4 |
+| enable.idempotence | Ensure that messages are successfully produced exactly once and in the original produce order | true |
 
 
 Topic configuration values that should be located under the `[kafka-topic]` header.
@@ -323,36 +335,55 @@ Topic configuration values that should be located under the `[kafka-topic]` head
 | *Name* | *Description* | *Default* |
 |--------|---------------|-----------|
 | compression.codec | Compression codec to use for compressing message sets; {none, gzip, snappy, lz4 } | none |
-| request.required.acks | How many acknowledgements the leader broker must receive from ISR brokers before responding to the request; { 0 = no ack, 1 = leader ack, -1 = all ISRs } | 1 |
+| request.required.acks | How many acknowledgements the leader broker must receive from ISR brokers before responding to the request; { 0 = no ack, 1 = leader ack, -1 = all ISRs } | all |
 | message.timeout.ms | Local message timeout. This value is only enforced locally and limits the time a produced message waits for successful delivery. A time of 0 is infinite. | 300000 |
 | queue.buffering.max.kbytes | Maximum total message size sum allowed on the producer queue |  |
 
 ### Output
 
-When running the probe some basic counters are output to stdout.  Of course during normal operation these values will be much larger.
+When running Fastcapa some basic counters are output to stdout.  Of course during normal operation these values will be much larger.
 
 ```
-     ------ in ------  --- queued --- ----- out ----- ---- drops ----
-[nic]               8               -               -               -
-[rx]                8               0                8                0
-[tx]                8               0                8                0
-[kaf]               8               1                7                0
+       ----------------------------------  packets  ---------------------------------
+
+       ----- in -----  --- queued --- ----- out ----- ---- drops ---- ---- pause ----
+[nic]        54518096               -       139978368               0               -
+[rx]         54518096            1024        54517072               -       139978368
+[tx]         54517072               0        54517072               -               0
+
+       ------------------------------  kafka messages  ------------------------------
+
+       ----- in -----  --- queued --- ----- out ----- ---- drops ---- ---- pause ----
+[kaf]            2749               0            2498               0               -
 ```
 
-* `[nic]` +  `in`:  The ethernet device is reporting that it has seen 8 packets.
-* `[rx]` + `in`: The receive workers have consumed 8 packets from the device.
-* `[rx]` + `out`: The receive workers have enqueued 8 packets onto the transmission rings.
-* `[rx]` + `drops`: If the transmission rings become full it will prevent the receive workers from enqueuing additional packets.  The excess packets are dropped.  This value will never decrease.
-* `[tx]` + `in`: The transmission workers have consumed 8 packets.
-* `[tx]` + `out`: The transmission workers have packaged 8 packets into Kafka messages.
-* `[tx]` + `drops`: If the Kafka client library accepted fewer packets than expected.  This value can increase or decrease over time as additional packets are acknowledged by the Kafka client library at a later point in time.
-* `[kaf]` + `in`: The Kafka client library has received 8 packets.
-* `[kaf]` + `out`: A total of 7 packets has successfully reached Kafka.
-* `[kaf]` + `queued`: There is 1 packet within the `rdkafka` queue waiting to be sent.
+* `[nic]` + `in`     : Total number of packets received by the ethernet nics.
+* `[nic]` + `queued` : N/A
+* `[nic]` + `out`    : Total number of packets (software generated pause frames) transmitted by the ethernet nics.
+* `[nic]` + `drops`  : Total number of packets dropped by the ethernet nics (due to errors, lack of mbufs etc).
+* `[nic]` + `pause`  : N/A
+
+* `[rx]`  + `in`     : Total number of packets received by the receive workers.
+* `[rx]`  + `queued` : Total number of packets in the buffer being packed by each receive worker.
+* `[rx]`  + `out`    : Total number of packets enqueued onto the transmission rings after being packed in to the buffers.
+* `[rx]`  + `drops`  : N/A
+* `[rx]`  + `pause`  : Total number of software pause frames generated by the receive workers.
+
+* `[tx]`  + `in`     : Total number of packets received by the transmit workers.
+* `[tx]`  + `queued` : Total number of packed packet buffers that trasmit workers still have enqueue onto the kafka message queue.
+* `[tx]`  + `out`    : Total number of packets enqueued onto the kafka message queue (as prepacked buffers).
+* `[tx]`  + `drops`  : N/A
+* `[tx]`  + `pause`  : Total number of software pause frames generated by the transmit workers.
+
+* `[kaf]` + `in`     : Total number of kafka messages (1 per packed buffer) received by the Kafka client library.
+* `[kaf]` + `queued` : Total number of kafka messages in the `rdkafka` queue waiting to be sent.
+* `[kaf]` + `out`    : Total number of kafka messages successfully sent to the kafka broker.
+* `[kaf]` + `drops`  : Total number of kafka messages dropped due to errors during transmission.
+* `[kaf]` + `pause`  : N/A
 
 ### Kerberos
 
-The probe can be used in a Kerberized environment.  Follow these additional steps to use Fastcapa with Kerberos.  The following assumptions have been made.  These may need altered to fit your environment.
+Fastcapa can be used in a Kerberized environment.  Follow these additional steps to use Fastcapa with Kerberos.  The following assumptions have been made.  These may need altered to fit your environment.
 
 * The Kafka broker is at `kafka1:6667`
 * Zookeeper is at `zookeeper1:2181`
@@ -362,8 +393,8 @@ The probe can be used in a Kerberized environment.  Follow these additional step
 
 1. Build Librdkafka with SASL support (` --enable-sasl`).
     ```
-    wget https://github.com/edenhill/librdkafka/archive/v0.9.4.tar.gz  -O - | tar -xz
-    cd librdkafka-0.9.4/
+    wget https://github.com/edenhill/librdkafka/archive/v1.1.0.tar.gz  -O - | tar -xz
+    cd librdkafka-1.1.0/
     ./configure --prefix=$RDK_PREFIX --enable-sasl
     make
     make install
@@ -404,19 +435,19 @@ The probe can be used in a Kerberized environment.  Follow these additional step
 How It Works
 ------
 
-The probe leverages a poll-mode, burst-oriented mechanism to capture packets from a network interface and transmit them efficiently to a Kafka topic.  Each packet is wrapped within a single Kafka message and the current timestamp, as epoch microseconds in network byte order, is attached as the message's key.
+Fastcapa leverages a poll-mode, burst-oriented mechanism to capture packets from a network interface and transmit them efficiently to a Kafka topic.  Each packet is wrapped within a single Kafka message and the current timestamp, as epoch microseconds in network byte order, is attached as the message's key.
 
-The probe leverages Receive Side Scaling (RSS), a feature provided by some ethernet devices that allows processing of received data to occur across multiple processes and logical cores.  It does this by running a hash function on each packet, whose value assigns the packet to one, of possibly many, receive queues.  The total number and size of these receive queues are limited by the ethernet device in use.  More capable ethernet devices will offer a greater number and greater sized receive queues.  
+Fastcapa leverages Receive Side Scaling (RSS), a feature provided by some ethernet devices that allows processing of received data to occur across multiple processes and logical cores.  It does this by running a hash function on each packet, whose value assigns the packet to one, of possibly many, receive queues.  The total number and size of these receive queues are limited by the ethernet device in use.  More capable ethernet devices will offer a greater number and greater sized receive queues.
 
- * Increasing the number of receive queues allows for greater parallelization of receive side processing.  
- * Increasing the size of each receive queue can allow the probe to handle larger, temporary spikes of network packets that can often occur.
+ * Increasing the number of receive queues allows for greater parallelization of receive side processing.
+ * Increasing the size of each receive queue can allow Fastcapa to handle larger, temporary spikes of network packets that can often occur.
 
 A set of receive workers, each assigned to a unique logical core, are responsible for fetching packets from the receive queues.  There can only be one receive worker for each receive queue.  The receive workers continually poll the receive queues and attempt to fetch multiple packets on each request.  The maximum number of packets fetched in one request is known as the 'burst size'.  If the receive worker actually receives 'burst size' packets, then it is likely that the queue is under pressure and more packets are available.  In this case the worker immediately fetches another 'burst size' set of packets.  It repeats this process up to a fixed number of times while the queue is under pressure.
 
 The receive workers then enqueue the received packets into a fixed size ring buffer known as a transmit ring.  There is always one transmit ring for each receive queue.  A set of transmit workers then dequeue packets from the transmit rings.  There can be one or more transmit workers assigned to any single transmit ring.  Each transmit worker has its own unique connection to Kafka.
 
 * Increasing the number of transmit workers allows for greater parallelization when writing data to Kafka.
-* Increasing the size of the transmit rings allows the probe to better handle temporary interruptions and latency when writing to Kafka.
+* Increasing the size of the transmit rings allows Fastcapa to better handle temporary interruptions and latency when writing to Kafka.
 
 After receiving the network packets from the transmit worker, the Kafka client library internally maintains its own send queue of messages.  Multiple threads are then responsible for managing this queue and creating batches of messages that are sent in bulk to a Kafka broker.  No control is exercised over this additional send queue and its worker threads, which can be an impediment to performance.  This is an opportunity for improvement that can be addressed as follow-on work.
 
@@ -432,7 +463,7 @@ The specific number of partitions needed will differ for each environment, but a
 
 ### Physical Layout
 
-It is important to note the physical layout of the hardware when assigning worker cores to the probe.  The worker cores should be on the same NUMA node or socket as the ethernet device itself.  Assigning logical cores across NUMA boundaries can significantly impede performance.
+It is important to note the physical layout of the hardware when assigning worker cores to Fastcapa.  The worker cores should be on the same NUMA node or socket as the ethernet device itself.  Assigning logical cores across NUMA boundaries can significantly impede performance.
 
 The following commands can help identify logical cores that are located on the same NUMA node or socket as the ethernet device itself.  These commands should be run when the device is still managed by the kernel itself; before binding the interface.
 ```
@@ -459,9 +490,9 @@ isolcpus=0,1,2,3,4,5,6,7
 
 ### Device Limitations
 
-Check the output of running the probe to ensure that there are no device limitations that you are not aware of.  While you may have specified 16 receive queues on the command line, your device may not support that number.  This is especially true for the number of receive queues and descriptors.
+Check the output of running Fastcapa to ensure that there are no device limitations that you are not aware of.  While you may have specified 16 receive queues on the command line, your device may not support that number.  This is especially true for the number of receive queues and descriptors.
 
-The following example shows the output when the number of receive descriptors requested is greater than what can be supported by the device.  In many cases the probe will not terminate, but will choose the maximum allowable value and continue.  This behavior is specific to the underlying device driver in use.
+The following example shows the output when the number of receive descriptors requested is greater than what can be supported by the device.  In many cases Fastcapa will not terminate, but will choose the maximum allowable value and continue.  This behavior is specific to the underlying device driver in use.
 ```
 PMD: rte_enic_pmd: Rq 0 Scatter rx mode enabled
 PMD: rte_enic_pmd: Rq 0 Scatter rx mode not being used

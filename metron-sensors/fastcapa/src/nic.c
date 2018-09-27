@@ -21,201 +21,168 @@
 /**
  * Default receive queue settings.
  */
-static const struct rte_eth_conf rx_conf_default = {
+static const struct rte_eth_conf port_conf_default = {
     .rxmode = {
-        .mq_mode = ETH_MQ_RX_RSS,
-        .max_rx_pkt_len = ETHER_MAX_LEN,
-        .enable_scatter = 0,
-        .enable_lro = 0
+        .mq_mode = ETH_MQ_RX_NONE,
+        .max_rx_pkt_len = RTE_ETHER_MAX_LEN,
     },
     .txmode = {
         .mq_mode = ETH_MQ_TX_NONE,
     },
-    .rx_adv_conf = {
-      .rss_conf = {
-        .rss_hf = ETH_RSS_IP | ETH_RSS_UDP | ETH_RSS_TCP | ETH_RSS_SCTP,
-      }
-    },
-};
-
-/**
- * Default transmit queue settings.
- */
-static const struct rte_eth_txconf tx_conf_default = {
-    .tx_thresh = {
-        .pthresh = 0,
-        .hthresh = 0,
-        .wthresh = 0
-    },
-    .tx_rs_thresh = 0,
-    .tx_free_thresh = 0,
-    .txq_flags = 0,
-    .tx_deferred_start = 0
 };
 
 /*
  * Initialize a NIC port.
  */
-static int init_port(
-    const uint8_t port_id,
-    struct rte_mempool* mem_pool,
-    const uint16_t nb_rx_queue,
-    const uint16_t nb_rx_desc)
+int port_init(
+    const uint16_t port,
+    struct rte_mempool ** mbuf_pools,
+    const uint16_t rx_queues,
+    const uint16_t nb_rx_desc,
+    unsigned int flow_control)
 {
-    struct rte_eth_conf rx_conf = rx_conf_default;
-    struct rte_eth_txconf tx_conf = tx_conf_default;
-    int retval;
-    uint16_t q;
-    int retry = 5;
-    const uint16_t tx_queues = 1;
-    int socket;
+    struct rte_ether_addr addr;
+    struct rte_eth_conf port_conf = port_conf_default;
     struct rte_eth_dev_info dev_info;
+    struct rte_eth_fc_conf fc_conf;
+    struct rte_eth_link link;
+    uint16_t socket, q, tx_queues = 0;
+    int retval, retry = 5;
 
-    if (port_id >= rte_eth_dev_count()) {
-        rte_exit(EXIT_FAILURE, "Port does not exist; port=%u \n", port_id);
-        return -1;
-    }
+    if (flow_control)
+        tx_queues = 2 * rx_queues;
 
-    // check that the number of RX queues does not exceed what is supported by the device
-    rte_eth_dev_info_get(port_id, &dev_info);
-    if (nb_rx_queue > dev_info.max_rx_queues) {
-        rte_exit(EXIT_FAILURE, "Too many RX queues for device; port=%u, rx_queues=%u, max_queues=%u \n",
-            port_id, nb_rx_queue, dev_info.max_rx_queues);
+    if (rte_eth_dev_is_valid_port(port) == 0) {
+        LOG_ERR("Invalid Port; port=%u \n", port);
         return -EINVAL;
     }
 
-    // check that the number of TX queues does not exceed what is supported by the device
+    // get device info and valid config
+    socket = rte_eth_dev_socket_id(port);
+    rte_eth_dev_info_get(port, &dev_info);
+
+    // print diagnostics
+    rte_eth_macaddr_get(port, &addr);
+    LOG_INFO("Port %u:, mac=%02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8
+                    " %02" PRIx8 " %02" PRIx8 ", RXdesc/queue=%d\n",
+        (unsigned int) port,
+        addr.addr_bytes[0], addr.addr_bytes[1],
+        addr.addr_bytes[2], addr.addr_bytes[3],
+        addr.addr_bytes[4], addr.addr_bytes[5],
+        nb_rx_desc);
+
+    LOG_INFO("TX Desc Info : Max = %hu, Min = %hu, Multiple of %hu\n",
+            dev_info.tx_desc_lim.nb_max,
+            dev_info.tx_desc_lim.nb_min,
+            dev_info.tx_desc_lim.nb_align);
+
+    LOG_INFO("TX Queue Info : Max = %hu\n", dev_info.max_tx_queues);
+
+    LOG_INFO("RX Desc Info : Max = %hu, Min = %hu, Multiple of %hu\n",
+            dev_info.rx_desc_lim.nb_max,
+            dev_info.rx_desc_lim.nb_min,
+            dev_info.rx_desc_lim.nb_align);
+
+    LOG_INFO("RX Queue Info : Max = %hu\n", dev_info.max_rx_queues);
+
+    /* Check that the requested number of RX queues is valid */
+    if (rx_queues > dev_info.max_rx_queues) {
+        LOG_ERR("Too many RX queues for device; port=%u, rx_queues=%u, max_queues=%u \n",
+            port, rx_queues, dev_info.max_rx_queues);
+        return -EINVAL;
+    }
+
+    /* Check that the requested number of TX queues is valid */
     if (tx_queues > dev_info.max_tx_queues) {
-        rte_exit(EXIT_FAILURE, "Too many TX queues for device; port=%u, tx_queues=%u, max_queues=%u \n",
-            port_id, tx_queues, dev_info.max_tx_queues);
+        LOG_ERR("Too many TX queues for device; port=%u, tx_queues=%u, max_queues=%u \n",
+            port, tx_queues, dev_info.max_tx_queues);
         return -EINVAL;
     }
 
-    retval = rte_eth_dev_configure(port_id, nb_rx_queue, tx_queues, &rx_conf);
-    if (retval != 0) {
-        rte_exit(EXIT_FAILURE, "Cannot configure device; port=%u, err=%s \n", port_id, strerror(-retval));
+    /* Configure multiqueue (Activate Receive Side Scaling on UDP/TCP fields) */
+    if (rx_queues > 1) {
+        port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
+        port_conf.rx_adv_conf.rss_conf.rss_key = NULL;
+        port_conf.rx_adv_conf.rss_conf.rss_hf = dev_info.flow_type_rss_offloads;
+    }
+
+    /* Check if the number of requested RX descriptors is valid */
+    if(nb_rx_desc > dev_info.rx_desc_lim.nb_max ||
+            nb_rx_desc < dev_info.rx_desc_lim.nb_min ||
+                nb_rx_desc % dev_info.rx_desc_lim.nb_align != 0) {
+        LOG_ERR("Port %d cannot be configured with %d RX "\
+                "descriptors per queue (min:%d, max:%d, align:%d)\n",
+                port, nb_rx_desc, dev_info.rx_desc_lim.nb_min,
+                dev_info.rx_desc_lim.nb_max, dev_info.rx_desc_lim.nb_align);
+        return -EINVAL;
+    }
+
+    retval = rte_eth_dev_configure(port, rx_queues, tx_queues, &port_conf);
+    if (retval) {
+        LOG_ERR("Cannot configure device; port=%u, err=%s \n", port, rte_strerror(-retval));
         return retval;
     }
 
     // create the receive queues
-    socket = rte_eth_dev_socket_id(port_id);
-    for (q = 0; q < nb_rx_queue; q++) {
-        retval = rte_eth_rx_queue_setup(port_id, q, nb_rx_desc, socket, NULL, mem_pool);
-        if (retval != 0) {
-            rte_exit(EXIT_FAILURE, "Cannot setup RX queue; port=%u, err=%s \n", port_id, strerror(-retval));
+    for (q = 0; q < rx_queues; q++) {
+        retval = rte_eth_rx_queue_setup(port, q, nb_rx_desc, socket, NULL, mbuf_pools[q]);
+        if (retval) {
+            LOG_ERR("Cannot setup RX queue; port=%u, err=%s \n", port, rte_strerror(-retval));
             return retval;
         }
     }
 
     // create the transmit queues - at least one TX queue must be setup even though we don't use it
     for (q = 0; q < tx_queues; q++) {
-        retval = rte_eth_tx_queue_setup(port_id, q, TX_QUEUE_SIZE, socket, &tx_conf);
-        if (retval != 0) {
-            rte_exit(EXIT_FAILURE, "Cannot setup TX queue; port=%u, err=%s \n", port_id, strerror(-retval));
+        retval = rte_eth_tx_queue_setup(port, q, TX_DESC_DEFAULT, socket, NULL);
+        if (retval) {
+            LOG_ERR("Cannot setup TX queue; port=%u, err=%s \n", port, rte_strerror(-retval));
             return retval;
         }
     }
 
-    // start the receive and transmit units on the device
-    retval = rte_eth_dev_start(port_id);
-    if (retval < 0) {
-        rte_exit(EXIT_FAILURE, "Cannot start device; port=%u, err=%s \n", port_id, strerror(-retval));
-        return retval;
-    }
-
-    // retrieve information about the device
-    struct rte_eth_link link;
+    // get link status
     do {
-        rte_eth_link_get_nowait(port_id, &link);
-
+        rte_eth_link_get_nowait(port, &link);
     } while (retry-- > 0 && !link.link_status && !sleep(1));
 
     // if still no link information, must be down
     if (!link.link_status) {
-        rte_exit(EXIT_FAILURE, "Link down; port=%u \n", port_id);
-        return 0;
+        LOG_ERR("Link down; port=%u \n", port);
+        return -ENOLINK;
     }
 
     // enable promisc mode
-    rte_eth_promiscuous_enable(port_id);
+    rte_eth_promiscuous_enable(port);
 
-    // print diagnostics
-    struct ether_addr addr;
-    rte_eth_macaddr_get(port_id, &addr);
-    LOG_INFO(USER1, "Device setup successfully; port=%u, mac=%02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-        (unsigned int) port_id,
-        addr.addr_bytes[0], addr.addr_bytes[1],
-        addr.addr_bytes[2], addr.addr_bytes[3],
-        addr.addr_bytes[4], addr.addr_bytes[5]);
-
-    return 0;
-}
-
-/*
- * Preparation for receiving and processing packets.
- */
-int init_receive(
-    const uint8_t enabled_port_mask,
-    const uint16_t nb_rx_queue,
-    const uint16_t nb_rx_desc)
-{
-    unsigned int nb_ports_available;
-    unsigned int nb_ports;
-    unsigned int port_id;
-    unsigned int size;
-
-    nb_ports_available = nb_ports = rte_eth_dev_count();
-
-    // create memory pool
-    size = NUM_MBUFS * nb_ports;
-    struct rte_mempool* mem_pool = rte_pktmbuf_pool_create("mbuf-pool", size, MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-    if (mem_pool == NULL) {
-        rte_exit(EXIT_FAILURE, "Unable to create memory pool; n=%u, cache_size=%u, data_room_size=%u, socket=%u \n",
-            size, MBUF_CACHE_SIZE, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    // enable flow control
+    retval = rte_eth_dev_flow_ctrl_get(port, &fc_conf);
+    if (retval) {
+        LOG_ERR("Cannot get flow control parameters; port=%u, err=%s \n", port, rte_strerror(-retval));
+        return retval;
     }
 
-    // initialize each specified ethernet ports
-    for (port_id = 0; port_id < nb_ports; port_id++) {
+    if (flow_control) {
+        fc_conf.mode = RTE_FC_FULL;
+        fc_conf.pause_time = 65535;
+        fc_conf.send_xon = 0;
+        fc_conf.mac_ctrl_frame_fwd = 1;
+        fc_conf.autoneg = 0;
+    }
+    else
+        fc_conf.mode = RTE_FC_NONE;
 
-        // skip over ports that are not enabled
-        if ((enabled_port_mask & (1 << port_id)) == 0) {
-            LOG_INFO(USER1, "Skipping over disabled port '%d'\n", port_id);
-            nb_ports_available--;
-            continue;
-        }
-
-        // initialize the port - creates one receive queue for each worker
-        LOG_INFO(USER1, "Initializing port %u\n", (unsigned)port_id);
-        if (init_port(port_id, mem_pool, nb_rx_queue, nb_rx_desc) != 0) {
-            rte_exit(EXIT_FAILURE, "Cannot initialize port %" PRIu8 "\n", port_id);
-        }
+    retval = rte_eth_dev_flow_ctrl_set(port, &fc_conf);
+    if (retval) {
+        LOG_ERR("Cannot set flow control parameters; port=%u, err=%s \n", port, rte_strerror(-retval));
+        return retval;
     }
 
-    // ensure that we were able to initialize enough ports
-    if (nb_ports_available < 1) {
-        rte_exit(EXIT_FAILURE, "Error: No available enabled ports. Portmask set?\n");
-    }
-
-    return 0;
-}
-
-/*
- * Preparation for transmitting packets.
- */
-int init_transmit(
-    struct rte_ring **tx_rings,
-    const unsigned int count,
-    const unsigned int size)
-{
-    unsigned int i;
-    char buf[32];
-
-    for(i = 0; i < count; i++) {
-        sprintf(buf, "tx-ring-%d", i);
-        tx_rings[i] = rte_ring_create(buf, size, rte_socket_id(), RING_F_SP_ENQ);
-        if(NULL == tx_rings[i]) {
-            rte_exit(EXIT_FAILURE, "Unable to create transmit ring: %s \n", rte_strerror(rte_errno));
-        }
+    // start the receive and transmit units on the device
+    retval = rte_eth_dev_start(port);
+    if (retval < 0) {
+        LOG_ERR("Cannot start device; port=%u, err=%s \n", port, rte_strerror(-retval));
+        return retval;
     }
 
     return 0;

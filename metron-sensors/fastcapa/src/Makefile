@@ -31,14 +31,13 @@ APP = fastcapa
 # all source are stored in SRCS-y
 SRCS-y := main.c args.c kafka.c nic.c worker.c
 
-KAFKALIB = -L/usr/local/lib -lrdkafka
-KAFKAINC = -I/usr/local/include/librdkafka/
+KAFKALIB = -lrdkafka
 
 GLIB     = $(shell pkg-config --libs glib-2.0) -lgthread-2.0
 GLIBINC  = $(shell pkg-config --cflags glib-2.0)
 
 LDLIBS += $(KAFKALIB) $(GLIB)
-CFLAGS += $(WERROR_FLAGS) $(KAFKAINC) $(GLIBINC)
+CFLAGS += $(WERROR_FLAGS) $(GLIBINC)
 
 # workaround for a gcc bug with noreturn attribute
 # http://gcc.gnu.org/bugzilla/show_bug.cgi?id=12603
@@ -46,7 +45,7 @@ ifeq ($(CONFIG_RTE_TOOLCHAIN_GCC),y)
 CFLAGS_main.o += -Wno-return-type
 endif
 
-EXTRA_CFLAGS += -O3 -Wall
+EXTRA_CFLAGS += -O3 -Wall -std=c99 -Wfatal-errors
 #EXTRA_CFLAGS += -g -Wall -DDEBUG
 
 include $(RTE_SDK)/mk/rte.extapp.mk

@@ -19,33 +19,37 @@
 #ifndef METRON_WORKER_H
 #define METRON_WORKER_H
 
-#include <stdint.h>
+#include <malloc.h>
 #include <unistd.h>
 
+#include <rte_common.h>
 #include <rte_ethdev.h>
+#include <rte_mbuf.h>
 
 #include "types.h"
 #include "kafka.h"
 
-volatile uint8_t quit_signal;
+#define ETHER_TYPE_FLOW_CONTROL 0x8808
+#define OPCODE_PAUSE 0x0001
+#define PAUSE_TIME 65535
 
 /*
- * Start the receive and transmit works.
+ * Process packets from a single queue.
  */
-int start_workers(
-    rx_worker_params* rx_params,
-    tx_worker_params* tx_params,
-    struct rte_ring **tx_rings,
-    app_params *p);
+int receive_worker(rx_worker_params* params);
+
+/*
+ * The transmit worker is responsible for consuming packets from the transmit
+ * rings and queueing the packets for bulk delivery to kafka.
+ */
+int transmit_worker(tx_worker_params *params);
 
 /*
  * Monitors the receive and transmit workers.  Executed by the main thread, while
  * other threads are created to perform the actual packet processing.
  */
 int monitor_workers(
-    const rx_worker_params *rx_params,
-    const unsigned nb_rx_workers,
-    const tx_worker_params *tx_params,
-    const unsigned nb_tx_workers);
+    app_params* params,
+    volatile bool *quit_signal);
 
 #endif

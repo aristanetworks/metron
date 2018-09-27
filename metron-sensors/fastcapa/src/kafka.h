@@ -19,14 +19,16 @@
 #ifndef METRON_KAFKA_H
 #define METRON_KAFKA_H
 
-#include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
+#include <malloc.h>
 #include <endian.h>
 #include <glib.h>
+
 #include <librdkafka/rdkafka.h>
+
 #include <rte_common.h>
-#include <rte_mbuf.h>
+
 #include "args.h"
 #include "types.h"
 
@@ -35,19 +37,14 @@
 /*
  * Initializes a pool of Kafka connections.
  */
-void kaf_init(
-    int num_of_conns,
-    const char* kafka_topic,
-    const char* kafka_config_path,
-    const char* kafka_stats_path);
+void kaf_init(app_params* params);
 
 /*
  * Publish a set of packets to a kafka topic.
  */
 int kaf_send(
-    struct rte_mbuf* data[],
-    int num_to_send,
-    int conn_id);
+    pcap_buffer* buffer,
+    const uint16_t conn_id);
 
 /*
  * Executes polling across all of the kafka client connections.  Ensures that any queued

@@ -23,19 +23,26 @@
 #include <string.h>
 #include <getopt.h>
 #include <sys/stat.h>
-#include <rte_memory.h>
+
+#include <rte_common.h>
 #include <rte_ethdev.h>
+
 #include "types.h"
 
-#define DEFAULT_RX_BURST_SIZE 32
-#define DEFAULT_TX_BURST_SIZE 256
 #define DEFAULT_PORT_MASK 0x01
-#define DEFAULT_KAFKA_TOPIC pcap
-#define DEFAULT_NB_RX_QUEUE 1
+#define DEFAULT_RX_BURST_SIZE 128
+#define DEFAULT_PAUSE_BURST_SIZE 128
 #define DEFAULT_NB_RX_DESC 1024
-#define DEFAULT_TX_RING_SIZE 2048
+#define DEFAULT_NB_MBUFS 65536
+#define DEFAULT_MBUF_LEN RTE_MBUF_DEFAULT_BUF_SIZE
+#define DEFAULT_NB_PBUFS 512
+#define DEFAULT_PBUF_LEN 4 * 1024 * 1024
+#define DEFAULT_QUEUES_PER_PORT 1
+#define DEFAULT_STATS_PERIOD 0
+#define DEFAULT_KAFKA_TOPIC pcap
 #define DEFAULT_KAFKA_STATS_PATH 0
-#define MAX_RX_BURST_SIZE 1024
+#define DEFAULT_FLOW_CONTROL 0
+#define MAX_BURST_SIZE 8192
 
 /**
  * Parse the command line arguments passed to the application.

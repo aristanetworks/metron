@@ -20,7 +20,6 @@
 #define METRON_KAFKA_H
 
 #include <string.h>
-#include <sys/time.h>
 #include <malloc.h>
 #include <endian.h>
 #include <glib.h>

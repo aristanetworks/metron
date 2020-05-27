@@ -64,8 +64,8 @@ typedef int bool;
  * Pcap packet header
  */
 typedef struct {
-    uint32_t timestamp;
-    uint32_t microseconds;
+    uint32_t seconds;
+    uint32_t nanoseconds;
     uint32_t packet_length;
     uint32_t packet_length_wire;
 } __rte_packed pcap_packet_header;

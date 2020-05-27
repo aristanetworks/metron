@@ -147,7 +147,7 @@ int receive_worker(rx_worker_params* params)
     pcap_buffer * buffer = NULL;
     pcap_packet_header header;
     size_t header_size = sizeof(header);
-    struct timeval tv;
+    struct timespec ts;
 
     uint16_t i, nb_rx;
     unsigned int flush = 0;
@@ -180,9 +180,9 @@ int receive_worker(rx_worker_params* params)
         // add each packet to the ring buffer
         if (likely(nb_rx > 0)) {
 
-            gettimeofday(&tv, NULL);
-            header.timestamp = (uint32_t) tv.tv_sec;
-            header.microseconds = (uint32_t) tv.tv_usec;
+            clock_gettime(CLOCK_REALTIME_COARSE, &ts);
+            header.seconds = (uint32_t) ts.tv_sec;
+            header.nanoseconds = (uint32_t) ts.tv_nsec;
 
             for (i=0; i < nb_rx; i++) {
                 bufptr = pkts[i];

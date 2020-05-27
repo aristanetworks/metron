@@ -145,9 +145,13 @@ int receive_worker(rx_worker_params* params)
     const uint32_t watermark = params->watermark;
 
     pcap_buffer * buffer = NULL;
-    pcap_packet_header header;
+    pcap_packet_header * header;
     size_t header_size = sizeof(header);
+    uint32_t packet_length;
+
+    const uint16_t mw_timestamp = params->mw_timestamp;
     struct timespec ts;
+    unsigned char * trailer_base;
 
     uint16_t i, nb_rx;
     unsigned int flush = 0;
@@ -172,39 +176,50 @@ int receive_worker(rx_worker_params* params)
         rte_exit(EXIT_FAILURE, "Error: Could not obtain an empty packet buffer (PBUF) " \
                                             "on Core %d\n", rte_lcore_id());
 
+    /* Run until the application is quit or killed. */
     while (likely(!(*quit_signal))) {
 
-        // receive a 'burst' of packets
+        /* Retrieve packets and put them into the ring */
         nb_rx = rte_eth_rx_burst(port, queue, pkts, rx_burst_size);
 
-        // add each packet to the ring buffer
         if (likely(nb_rx > 0)) {
 
-            clock_gettime(CLOCK_REALTIME_COARSE, &ts);
-            header.seconds = (uint32_t) ts.tv_sec;
-            header.nanoseconds = (uint32_t) ts.tv_nsec;
+            if (!mw_timestamp)
+                clock_gettime(CLOCK_REALTIME_COARSE, &ts);
 
             for (i=0; i < nb_rx; i++) {
                 bufptr = pkts[i];
-                rte_prefetch0(rte_pktmbuf_mtod(bufptr, void *));
 
-                header.packet_length = bufptr->pkt_len;
-                header.packet_length_wire = bufptr->pkt_len;
-                rte_mov16(buffer->buffer + buffer->offset, (void*)&header);
+                header = (pcap_packet_header *)(buffer->buffer + buffer->offset);
                 buffer->offset += header_size;
 
+                packet_length = bufptr->pkt_len;
+
+                header->packet_length = packet_length;
+                header->packet_length_wire = packet_length;
+
                 if (unlikely(bufptr->nb_segs > 1)) {
-                    rte_prefetch0(rte_pktmbuf_mtod(bufptr->next, void *));
                     do {
                         rte_memcpy(buffer->buffer + buffer->offset, rte_pktmbuf_mtod(bufptr, void*), bufptr->data_len);
                         buffer->offset += bufptr->data_len;
                         bufptr = bufptr->next;
                     } while (bufptr);
+                    /* Reset the pointer to the original mbuf for freeing */
                     bufptr = pkts[i];
                 }
                 else {
-                    rte_memcpy(buffer->buffer + buffer->offset, rte_pktmbuf_mtod(bufptr, void*), header.packet_length);
-                    buffer->offset += header.packet_length;
+                    rte_memcpy(buffer->buffer + buffer->offset, rte_pktmbuf_mtod(bufptr, void*), packet_length);
+                    buffer->offset += packet_length;
+                }
+
+                if (mw_timestamp) {
+                    trailer_base = buffer->buffer + buffer->offset - 12;
+                    header->seconds = ntohl(*(uint32_t *)trailer_base);
+                    header->nanoseconds = ntohl(*(uint32_t *)(trailer_base + 4));
+                }
+                else {
+                    header->seconds = (uint32_t) ts.tv_sec;
+                    header->nanoseconds = (uint32_t) ts.tv_nsec;
                 }
 
                 rte_pktmbuf_free(bufptr);

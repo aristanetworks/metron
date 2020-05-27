@@ -39,6 +39,7 @@ static void print_usage(void)
            " -t KAFKA_TOPIC      Name of the kafka topic                      [%s]\n"
            " -c KAFKA_CONF       File containing configs for kafka client         \n"
            " -f KAFKA_STATS      Append kafka client stats to a file              \n"
+           " -y                  Use MetaWatch trailer timestamps                 \n"
            " -z                  Use pause frames for flow control                \n"
            " -h                  Print this help message                          \n",
         STR(DEFAULT_PORT_MASK),
@@ -110,6 +111,7 @@ static int parse_app_args(int argc, char** argv, app_params* p)
     p->nb_pbufs = DEFAULT_NB_PBUFS;
     p->pbuf_len = DEFAULT_PBUF_LEN;
     p->flow_control = DEFAULT_FLOW_CONTROL;
+    p->mw_timestamp = DEFAULT_MW_TIMESTAMP;
     p->stats_period = DEFAULT_STATS_PERIOD;
     p->nb_ports = 0;
 
@@ -221,6 +223,11 @@ static int parse_app_args(int argc, char** argv, app_params* p)
             // flow control
             case 'z':
                 p->flow_control = 1;
+                break;
+
+            // MetaWatch Timestamps
+            case 'y':
+                p->mw_timestamp = 1;
                 break;
 
             // kafka topic

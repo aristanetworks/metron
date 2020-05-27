@@ -123,6 +123,9 @@ typedef struct {
     /* Use flow control */
     uint16_t flow_control;
 
+    /* Use MetaWatch trailer timestamps */
+    uint16_t mw_timestamp;
+
     /* the ring onto which full packet buffers are enqueued */
     struct rte_ring * pbuf_full_ring;
 
@@ -238,6 +241,9 @@ typedef struct {
 
     /* Use flow control */
     uint16_t flow_control;
+
+    /* Use MetaWatch trailer timestamps */
+    uint16_t mw_timestamp;
 
     /* Print statistics periodically */
     uint16_t stats_period;

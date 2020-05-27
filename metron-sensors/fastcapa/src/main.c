@@ -170,6 +170,7 @@ int main(int argc, char* argv[])
             config->rx_burst_size = params.rx_burst_size;
             config->pause_burst_size = params.pause_burst_size;
             config->flow_control = params.flow_control;
+            config->mw_timestamp = params.mw_timestamp;
             config->pbuf_free_ring = params.pbuf_free_rings[k];
             config->pbuf_full_ring = params.pbuf_full_rings[k];
             config->watermark = params.watermark;

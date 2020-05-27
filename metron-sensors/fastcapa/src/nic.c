@@ -44,13 +44,15 @@ int port_init(
     struct rte_ether_addr addr;
     struct rte_eth_conf port_conf = port_conf_default;
     struct rte_eth_dev_info dev_info;
+    struct rte_eth_rxconf rxq_conf;
+    struct rte_eth_txconf txq_conf;
     struct rte_eth_fc_conf fc_conf;
     struct rte_eth_link link;
     uint16_t socket, q, tx_queues = 0;
     int retval, retry = 5;
 
     if (flow_control)
-        tx_queues = 2 * rx_queues;
+        tx_queues = rx_queues;
 
     if (rte_eth_dev_is_valid_port(port) == 0) {
         LOG_ERR("Invalid Port; port=%u \n", port);
@@ -117,31 +119,49 @@ int port_init(
         return -EINVAL;
     }
 
+    /* Enable jumbo frames */
+    port_conf.rxmode.max_rx_pkt_len = dev_info.max_mtu;
+    if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_JUMBO_FRAME)
+        port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_JUMBO_FRAME;
+
+    /* Enable scatter gather */
+    if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_SCATTER)
+        port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_SCATTER;
+
+    /* Configure the Ethernet device. */
     retval = rte_eth_dev_configure(port, rx_queues, tx_queues, &port_conf);
     if (retval) {
         LOG_ERR("Cannot configure device; port=%u, err=%s \n", port, rte_strerror(-retval));
         return retval;
     }
 
-    // create the receive queues
+    /* Allocate and set up RX queues. */
+    rxq_conf = dev_info.default_rxconf;
+    rxq_conf.offloads = port_conf.rxmode.offloads;
+    if (flow_control)
+        rxq_conf.rx_drop_en = 0;
+
     for (q = 0; q < rx_queues; q++) {
-        retval = rte_eth_rx_queue_setup(port, q, nb_rx_desc, socket, NULL, mbuf_pools[q]);
+        retval = rte_eth_rx_queue_setup(port, q, nb_rx_desc, socket, &rxq_conf, mbuf_pools[q]);
         if (retval) {
             LOG_ERR("Cannot setup RX queue; port=%u, err=%s \n", port, rte_strerror(-retval));
             return retval;
         }
     }
 
-    // create the transmit queues - at least one TX queue must be setup even though we don't use it
+    /* Allocate and set up TX queues */
+    txq_conf = dev_info.default_txconf;
+    txq_conf.offloads = port_conf.txmode.offloads;
+
     for (q = 0; q < tx_queues; q++) {
-        retval = rte_eth_tx_queue_setup(port, q, TX_DESC_DEFAULT, socket, NULL);
+        retval = rte_eth_tx_queue_setup(port, q, TX_DESC_DEFAULT, socket, &txq_conf);
         if (retval) {
             LOG_ERR("Cannot setup TX queue; port=%u, err=%s \n", port, rte_strerror(-retval));
             return retval;
         }
     }
 
-    // get link status
+    /* Get link status */
     do {
         rte_eth_link_get_nowait(port, &link);
     } while (retry-- > 0 && !link.link_status && !sleep(1));

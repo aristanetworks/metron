@@ -195,7 +195,7 @@ int main(int argc, char* argv[])
             config->worker_id = k;
             config->quit_signal = &quit_signal;
             config->port = port;
-            config->queue = (2 * j) + 1;
+            config->queue = params.nb_queues_per_port + j;
             config->kafka_id = k;
             config->tx_burst_size = params.nb_pbufs;
             config->pause_burst_size = params.pause_burst_size;

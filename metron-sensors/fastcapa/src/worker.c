@@ -227,7 +227,7 @@ int receive_worker(rx_worker_params* params)
 
             /* Update stats */
             params->stats->in += nb_rx;
-            params->stats->depth+=nb_rx;
+            params->stats->depth += nb_rx;
             flush = 0;
         }
         else

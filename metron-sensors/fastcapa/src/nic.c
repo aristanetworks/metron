@@ -52,7 +52,7 @@ int port_init(
     int retval, retry = 5;
 
     if (flow_control)
-        tx_queues = rx_queues;
+        tx_queues = 2 * rx_queues;
 
     if (rte_eth_dev_is_valid_port(port) == 0) {
         LOG_ERR("Invalid Port; port=%u \n", port);

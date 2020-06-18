@@ -275,6 +275,7 @@ fastcapa -h
 | Configuration File | -c KAFKA_CONF | Path to a file containing configuration values. |  |
 | Stats period | -s STATS_PERIOD | Periodically print performance metrics to STDOUT (every X seconds, 0 to disable). | 0 |
 | Stats file | -f KAFKA_STATS | Appends performance metrics in the form of JSON strings to the specified file. |  |
+| Use MetaWatch timestamps | -y | Extract timestamps from the MetaWatch trailer and use those in the packet header |  |
 | Flow control | -z | Enable 802.3x flow control back to the capture source. |  |
 
 To get more information about the Fastcapa specific parameters, run the following.  Note that this puts the `-h` after the double-dash `--`.
@@ -297,6 +298,7 @@ fastcapa [EAL options] -- [APP options]
  -t KAFKA_TOPIC      Name of the kafka topic                      [pcap]
  -c KAFKA_CONF       File containing configs for kafka client
  -f KAFKA_STATS      Append kafka client stats to a file
+ -y                  Use MetaWatch trailer timestamps
  -z                  Use pause frames for flow control
  -h                  Print this help message
 ```
@@ -481,13 +483,6 @@ NUMA node1 CPU(s):     8-15,24-31
 
 In this example `enp9s0f0` is located on NUMA node 0 and is local to the logical cores 0-7 and 16-23.  You should choose worker cores from this list.
 
-### CPU Isolation
-
-Once you have chosen the logical cores to use that are local to the ethernet device, it also beneficial to isolate those cores so that the Linux kernel scheduler does not attempt to run tasks on them.  This can be done using the `isolcpus` kernel boot parameter.
-```
-isolcpus=0,1,2,3,4,5,6,7
-```
-
 ### Device Limitations
 
 Check the output of running Fastcapa to ensure that there are no device limitations that you are not aware of.  While you may have specified 16 receive queues on the command line, your device may not support that number.  This is especially true for the number of receive queues and descriptors.
@@ -505,6 +500,30 @@ PMD: rte_enic_pmd: Using 512 rx descriptors (sop 512, data 0)
 PMD: rte_enic_pmd: TX Queues - effective number of descs:32
 PMD: rte_enic_pmd: vNIC resources used:  wq 1 rq 4 cq 3 intr 0
 ```
+
+### Low performance / packet drops:
+
+  a) try the following kernel cmdline parameters to enable cpu core isolation:
+
+  ```
+  e.g. isolate cores 1-7 in an eight core CPU
+  isolcpus=1-7 nohz_full=1-7 rcu_nocbs=1-7 irqaffinity=0
+  ```
+
+  b) try the following kernel cmdline parameters to disable some of the spectre /
+  meltdown fixes in the linux kernel which can drastically reduce performance:
+
+  ```
+  nospec_store_bypass_disable noibrs noibpb spectre_v2_user=off spectre_v2=off
+  nopti l1tf=off kvm-intel.vmentry_l1d_flush=never mitigations=off
+  ```
+
+  c) try the following kernel cmdline parameters to disable CPU low power states and
+  other performce reducing linux features:
+
+  ```
+  selinux=0 audit=0 tsc=reliable intel_idle.max_cstate=0 processor.max_cstate=0
+  ```
 
 ### More Information
 
